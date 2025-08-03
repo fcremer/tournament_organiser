@@ -264,6 +264,21 @@ def _render_page(tournaments, archive=False):
         /* Create form toggle */
         .create-container { display: none; margin-top: 0.5rem; }
         .create-container.active { display: block; }
+    /* ---------- Mobile Tweaks ---------- */
+    /* Header scales on narrow screens */
+    header { flex-wrap: wrap; }
+    .logo   { max-width: 28vw; height: auto; }
+    .headline {
+      font-size: clamp(1.25rem, 4vw, 1.75rem);
+      margin-top: .5rem;
+    }
+
+    /* Stack table + form vertically on small screens */
+    @media (max-width: 600px) {
+      .card-body  { display: flex; flex-direction: column; }
+      .card-right { margin-top: 1rem; }
+      .card-left table { width: 100%; }
+    }
     </style></head><body>
     <header>
       <img src="https://beta.aixtraball.de/static/images/logo.png" class="logo" alt="Logo">
