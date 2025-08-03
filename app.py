@@ -10,7 +10,7 @@ import calendar
 from pathlib import Path
 from flask import (
     Flask, request, redirect, url_for,
-    flash, render_template_string,
+    flash, render_template_string, make_response,
     session, abort
 )
 
@@ -76,13 +76,31 @@ def _filter_lists():
 # ---------- Routes ----------
 @app.route("/", methods=["GET"])
 def index():
-    upcoming, _ = _filter_lists()
-    return _render_page(upcoming, archive=False)
+    tournaments, _ = _filter_lists()
+    filter_name = request.cookies.get("filter", "")
+    if filter_name:
+        key = filter_name.lower()
+        tournaments = [
+            t for t in tournaments
+            if (key in t["name"].lower())
+            or (t.get("location","") and key in t["location"].lower())
+            or any(key in p["name"].lower() for p in t["participants"])
+        ]
+    return _render_page(tournaments, archive=False, filter_name=filter_name)
 
 @app.route("/archive", methods=["GET"])
 def archive():
-    _, past = _filter_lists()
-    return _render_page(past, archive=True)
+    _, tournaments = _filter_lists()
+    filter_name = request.cookies.get("filter", "")
+    if filter_name:
+        key = filter_name.lower()
+        tournaments = [
+            t for t in tournaments
+            if (key in t["name"].lower())
+            or (t.get("location","") and key in t["location"].lower())
+            or any(key in p["name"].lower() for p in t["participants"])
+        ]
+    return _render_page(tournaments, archive=True, filter_name=filter_name)
 
 @app.route("/create", methods=["POST"])
 def create():
@@ -242,8 +260,23 @@ def edit_tournament(tid):
     base = ref.split('#')[0] if ref else url_for("index")
     return redirect(f"{base}#tournament-{tid}")
 
+@app.route("/set_filter", methods=["POST"])
+def set_filter():
+    resp = make_response(redirect(request.headers.get("Referer", url_for("index"))))
+    # If clear button was clicked
+    if request.form.get("clear"):
+        resp.delete_cookie("filter")
+        return resp
+    # Otherwise set or delete based on filter input
+    filter_name = request.form.get("filter", "").strip()
+    if filter_name:
+        resp.set_cookie("filter", filter_name, max_age=365*24*3600)
+    else:
+        resp.delete_cookie("filter")
+    return resp
+
 # ---------- Template ----------
-def _render_page(tournaments, archive=False):
+def _render_page(tournaments, archive=False, filter_name=""):
     base_tpl = """
     <!doctype html><html lang="de"><head>
     <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -342,6 +375,15 @@ def _render_page(tournaments, archive=False):
       <a href="{{ url_for('index') }}" class="{% if not archive %}active{% endif %}">Übersicht</a>
       <a href="{{ url_for('archive') }}" class="{% if archive %}active{% endif %}">Archiv</a>
     </nav>
+    <form method="post" action="{{ url_for('set_filter') }}" style="margin-bottom:1rem;">
+  <input type="text" name="filter" placeholder="Nach Teilnehmer, Event oder Location filtern"
+         value="{{ filter_name }}"
+         style="padding:.5rem;border:1px solid #ddd;border-radius:.5rem;width:200px;">
+  <button class="btn-primary" type="submit">Anwenden</button>
+  {% if filter_name %}
+    <button class="btn-primary" type="submit" name="clear" value="1">Löschen</button>
+  {% endif %}
+</form>
     <div class="cal-wrapper">
       {% for m in calendar_months %}
       <div class="cal">
@@ -549,6 +591,7 @@ def _render_page(tournaments, archive=False):
     return render_template_string(base_tpl,
                                   tournaments=tournaments,
                                   archive=archive,
+                                  filter_name=filter_name,
                                   all_names=all_names,
                                   calendar_months=months)
 
