@@ -322,7 +322,10 @@ def _render_page(tournaments, archive=False):
         <div class="card-header">
           <div>
             <h2>{{ t.name }}</h2>
-            <small>{{ t.start_fmt }}{% if t.end_date and t.end_date!=t.start_date %} – {{ t.end_fmt }}{% endif %}</small>
+            <small>
+              {{ t.start_fmt }}{% if t.end_date and t.end_date!=t.start_date %} – {{ t.end_fmt }}{% endif %}
+              {% if t.location %} · {{ t.location }}{% endif %}
+            </small>
           </div>
         </div>
         <div class="detail-container">
