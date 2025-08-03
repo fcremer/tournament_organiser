@@ -6,10 +6,11 @@ Start:  python app.py   (oder via Docker)
 © 2025 – feel free to adapt!
 """
 import os, uuid, yaml, datetime as dt
+import calendar
 from pathlib import Path
 from flask import (
     Flask, request, redirect, url_for,
-    flash, render_template_string,
+    flash, render_template_string, make_response,
     session, abort
 )
 
@@ -75,13 +76,31 @@ def _filter_lists():
 # ---------- Routes ----------
 @app.route("/", methods=["GET"])
 def index():
-    upcoming, _ = _filter_lists()
-    return _render_page(upcoming, archive=False)
+    tournaments, _ = _filter_lists()
+    filter_name = request.cookies.get("filter", "")
+    if filter_name:
+        key = filter_name.lower()
+        tournaments = [
+            t for t in tournaments
+            if (key in t["name"].lower())
+            or (t.get("location","") and key in t["location"].lower())
+            or any(key in p["name"].lower() for p in t["participants"])
+        ]
+    return _render_page(tournaments, archive=False, filter_name=filter_name)
 
 @app.route("/archive", methods=["GET"])
 def archive():
-    _, past = _filter_lists()
-    return _render_page(past, archive=True)
+    _, tournaments = _filter_lists()
+    filter_name = request.cookies.get("filter", "")
+    if filter_name:
+        key = filter_name.lower()
+        tournaments = [
+            t for t in tournaments
+            if (key in t["name"].lower())
+            or (t.get("location","") and key in t["location"].lower())
+            or any(key in p["name"].lower() for p in t["participants"])
+        ]
+    return _render_page(tournaments, archive=True, filter_name=filter_name)
 
 @app.route("/create", methods=["POST"])
 def create():
@@ -212,6 +231,7 @@ def delete_tournament(tid):
     flash("Turnier gelöscht.")
     return redirect(url_for("admin"))
 
+
 @app.route("/admin/delete_participant/<tid>/<pid>", methods=["POST"])
 def delete_participant(tid, pid):
     if not session.get("admin"): abort(403)
@@ -223,18 +243,51 @@ def delete_participant(tid, pid):
     flash("Teilnehmer gelöscht.")
     return redirect(url_for("admin"))
 
+# ---------- Tournament Edit ----------
+@app.route("/edit_tournament/<tid>", methods=["POST"])
+def edit_tournament(tid):
+    link = request.form.get("link", "").strip()
+    description = request.form.get("description", "").strip()
+    data = _load()
+    for t in data["tournaments"]:
+        if t["id"] == tid:
+            t["link"] = link
+            t["description"] = description
+            break
+    _save(data)
+    flash("Turnier aktualisiert!")
+    ref = request.headers.get("Referer", "")
+    base = ref.split('#')[0] if ref else url_for("index")
+    return redirect(f"{base}#tournament-{tid}")
+
+@app.route("/set_filter", methods=["POST"])
+def set_filter():
+    resp = make_response(redirect(request.headers.get("Referer", url_for("index"))))
+    # If clear button was clicked
+    if request.form.get("clear"):
+        resp.delete_cookie("filter")
+        return resp
+    # Otherwise set or delete based on filter input
+    filter_name = request.form.get("filter", "").strip()
+    if filter_name:
+        resp.set_cookie("filter", filter_name, max_age=365*24*3600)
+    else:
+        resp.delete_cookie("filter")
+    return resp
+
 # ---------- Template ----------
-def _render_page(tournaments, archive=False):
+def _render_page(tournaments, archive=False, filter_name=""):
     base_tpl = """
     <!doctype html><html lang="de"><head>
     <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
     <title>Turnierverwaltung</title>
+    
     <style>
     :root{--accent:#c00000;}
     body{font-family:system-ui,sans-serif;margin:0;padding:1rem;background:#fafafa;}
     header, .card{background:#fff;border-radius:.75rem;}
     header{display:flex;align-items:center;padding:1rem;margin-bottom:1rem;box-shadow:0 2px 4px rgba(0,0,0,.1);}
-    .logo{max-width:180px;height:auto;}
+    .logo{max-width:90px;height:auto;}
     .headline{color:var(--accent);font-size:1.75rem;font-weight:600;margin-left:1rem;}
     .tabs{display:flex;gap:1rem;margin:1rem 0;}
     .tabs a{padding:.5rem 1rem;text-decoration:none;border-radius:.5rem;color:#333;background:#f0f0f0;}
@@ -267,7 +320,7 @@ def _render_page(tournaments, archive=False):
     /* ---------- Mobile Tweaks ---------- */
     /* Header scales on narrow screens */
     header { flex-wrap: wrap; }
-    .logo   { max-width: 28vw; height: auto; }
+    .logo   { max-width: 14vw; height: auto; }
     .headline {
       font-size: clamp(1.25rem, 4vw, 1.75rem);
       margin-top: .5rem;
@@ -279,7 +332,41 @@ def _render_page(tournaments, archive=False):
       .card-right { margin-top: 1rem; }
       .card-left table { width: 100%; }
     }
-    </style></head><body>
+    /* Calendar responsive: mobile swipe, desktop fixed 4 months */
+    .cal-wrapper {
+      display: flex;
+      gap: 1rem;
+      -webkit-overflow-scrolling: touch;
+      scroll-snap-type: x mandatory;
+      padding-bottom: .5rem;
+    }
+    @media (max-width: 900px) {
+      .cal-wrapper { overflow-x: auto; }
+      .cal { flex: 0 0 260px; scroll-snap-align: start; }
+    }
+    @media (min-width: 901px) {
+      .cal-wrapper { overflow: hidden; }
+      .cal { flex: 0 0 25%; /* four per row */ }
+    }
+    /* Calendar cell styling remains unchanged */
+    .cal { border:1px solid #ddd; border-radius:.5rem; overflow:hidden; }
+    .cal-header { background:var(--accent); color:#fff; text-align:center; padding:.25rem 0; font-weight:600; }
+    .cal-grid { display:grid; grid-template-columns:repeat(7,1fr); }
+    .cal-cell { padding:.25rem; text-align:center; border-bottom:1px solid #eee; border-right:1px solid #eee; }
+    .cal-cell:last-child { border-right:none; }
+    .cal-day { font-size:.85rem; color:#666; }
+    .cal-cell.active { background:#d4edda; cursor:pointer; }
+    .cal-cell.active:hover { background:#bfe0c2; }
+    /* Standard links in accent red, no underline */
+    a, a:hover {
+      color: var(--accent);
+      text-decoration: none;
+    }
+        /* Tournament edit form toggle */
+        .edit-tour-container { display: none; margin-top: 1rem; }
+        .edit-tour-container.active { display: block; }
+    </style>
+    </head><body>
     <header>
       <img src="https://beta.aixtraball.de/static/images/logo.png" class="logo" alt="Logo">
       <h1 class="headline">Turnierverwaltung</h1>
@@ -288,6 +375,40 @@ def _render_page(tournaments, archive=False):
       <a href="{{ url_for('index') }}" class="{% if not archive %}active{% endif %}">Übersicht</a>
       <a href="{{ url_for('archive') }}" class="{% if archive %}active{% endif %}">Archiv</a>
     </nav>
+    <form method="post" action="{{ url_for('set_filter') }}" style="margin-bottom:1rem;">
+  <input type="text" name="filter" placeholder="Nach Teilnehmer, Event oder Location filtern"
+         value="{{ filter_name }}"
+         style="padding:.5rem;border:1px solid #ddd;border-radius:.5rem;width:200px;">
+  <button class="btn-primary" type="submit">Anwenden</button>
+  {% if filter_name %}
+    <button class="btn-primary" type="submit" name="clear" value="1">Löschen</button>
+  {% endif %}
+</form>
+    <div class="cal-wrapper">
+      {% for m in calendar_months %}
+      <div class="cal">
+        <div class="cal-header">{{ m.name }}</div>
+        <div class="cal-grid">
+          {% for day in ['Mo','Tu','We','Th','Fr','Sa','Su'] %}
+            <div class="cal-cell cal-day">{{ day }}</div>
+          {% endfor %}
+          {% for wk in m.weeks %}
+            {% for c in wk %}
+              {% if c.day %}
+                {% if c.active %}
+                  <a href="#tournament-{{ c.tid }}" class="cal-cell active">{{ c.day }}</a>
+                {% else %}
+                  <div class="cal-cell">{{ c.day }}</div>
+                {% endif %}
+              {% else %}
+                <div class="cal-cell">&nbsp;</div>
+              {% endif %}
+            {% endfor %}
+          {% endfor %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
     <datalist id="player_names">
       {% for name in all_names %}<option value="{{ name }}">{% endfor %}
     </datalist>
@@ -327,6 +448,9 @@ def _render_page(tournaments, archive=False):
               {% if t.location %} · {{ t.location }}{% endif %}
             </small>
           </div>
+          <svg class="edit-tour-toggle" xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="var(--accent)" viewBox="0 0 24 24" style="cursor:pointer;">
+            <path d="M3 17.25V21h3.75l11.06-11.06-3.75-3.75L3 17.25zm2.16 1.34l.59-2.36 2.36.59-2.95 1.77zm13.7-10.7l-1.77 1.77-3.75-3.75 1.77-1.77a.996.996 0 011.41 0l2.34 2.34a.996.996 0 010 1.41z"/>
+          </svg>
         </div>
         <div class="detail-container">
           {% if t.link %}
@@ -335,6 +459,15 @@ def _render_page(tournaments, archive=False):
           {% if t.description %}
             <small style="white-space: pre-wrap; display: block;">{{ t.description }}</small>
           {% endif %}
+        </div>
+        <div class="edit-tour-container">
+          <form method="post" action="{{ url_for('edit_tournament', tid=t.id) }}">
+            <label class="form-label">Link</label>
+            <input name="link" value="{{ t.link or '' }}">
+            <label class="form-label">Beschreibung</label>
+            <textarea name="description" rows="2">{{ t.description or '' }}</textarea>
+            <button class="btn-primary" type="submit">Speichern</button>
+          </form>
         </div>
         <div class="card-body">
           <div class="card-left">
@@ -349,11 +482,12 @@ def _render_page(tournaments, archive=False):
                     <td class="status-{{ stat }}">{% if stat=='attending' %}✓{% elif stat=='interested' %}?{% else %}×{% endif %}</td>
                   {% endfor %}
                   <td>
-                    <button type="button" class="edit-btn"
-                            data-name="{{ p.name }}"
-                            data-statuses='{{ p.statuses|tojson }}'>
-                      Bearbeiten
-                    </button>
+                    <svg class="edit-btn" xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="var(--accent)" viewBox="0 0 24 24" style="cursor:pointer;"
+                       title="Bearbeiten"
+                       data-name="{{ p.name }}"
+                       data-statuses='{{ p.statuses|tojson }}'>
+                      <path d="M3 17.25V21h3.75l11.06-11.06-3.75-3.75L3 17.25zm2.16 1.34l.59-2.36 2.36.59-2.95 1.77zm13.7-10.7l-1.77 1.77-3.75-3.75 1.77-1.77a.996.996 0 011.41 0l2.34 2.34a.996.996 0 010 1.41z"/>
+                    </svg>
                   </td>
                 </tr>
                 {% endfor %}
@@ -371,7 +505,7 @@ def _render_page(tournaments, archive=False):
                 <select name="status_{{ d.iso }}" id="select_{{ d.iso }}">
                   <option value="attending">Angemeldet</option>
                   <option value="interested">Interesse</option>
-                  <option value="no">kein Interesse</option>
+                  <option value="no">keine Teilnahme</option>
                 </select>
               </div>
               {% endfor %}
@@ -386,33 +520,80 @@ def _render_page(tournaments, archive=False):
     <script>
     document.addEventListener('DOMContentLoaded', () => {
       document.body.addEventListener('click', e => {
+        // Toggle tournament edit form
+        if (e.target.classList.contains('edit-tour-toggle')) {
+          const btn = e.target;
+          const card = btn.closest('.card');
+          const container = card.querySelector('.edit-tour-container');
+          if (container) container.classList.toggle('active');
+          return;
+        }
         // Create toggle
         if (e.target.classList.contains('create-toggle')) {
           e.target.nextElementSibling.classList.toggle('active');
           return;
         }
-        // Edit button
-        if (e.target.classList.contains('edit-btn')) {
-          const btn = e.target, card = btn.closest('.card'),
-                form = card.querySelector('form[action*="signup"]'),
-                statuses = JSON.parse(btn.dataset.statuses);
-          form.querySelector('input[name="player"]').value = btn.dataset.name;
-          Object.entries(statuses).forEach(([date,stat]) => {
-            const sel = form.querySelector('select[name="status_'+date+'"]');
+        // Edit participant: prefill signup form
+        const pbtn = e.target.closest('.edit-btn');
+        if (pbtn) {
+          const btn = pbtn;
+          const card = btn.closest('.card');
+          const form = card.querySelector('form[action*="signup"]');
+          const statuses = JSON.parse(btn.getAttribute('data-statuses'));
+          // Prefill name
+          form.querySelector('input[name="player"]').value = btn.getAttribute('data-name');
+          // Prefill statuses
+          Object.entries(statuses).forEach(([date, stat]) => {
+            const sel = form.querySelector('select[name="status_' + date + '"]');
             if (sel) sel.value = stat;
           });
-          form.scrollIntoView({behavior:'smooth'});
+          form.scrollIntoView({ behavior: 'smooth' });
+          return;
         }
       });
     });
     </script>
     </body></html>
     """
+    # ----- Build calendar: start with first upcoming tournament month, show 4 months -----
+    today = _today()
+    # Determine the first month to display (first month with an upcoming or ongoing tournament)
+    if tournaments:
+        next_start = min(
+            _parse(t["start_date"])
+            for t in tournaments
+            if _parse(t["end_date"]) >= today
+        )
+        first_month_date = next_start.replace(day=1)
+    else:
+        first_month_date = today.replace(day=1)
+    months = []
+    for m_offset in range(4):  # show exactly 4 months on desktop
+        month_date = (first_month_date + dt.timedelta(days=32 * m_offset)).replace(day=1)
+        year, month = month_date.year, month_date.month
+        month_name = month_date.strftime("%B %Y")
+        cal = calendar.Calendar(firstweekday=0)
+        weeks = []
+        for week in cal.monthdatescalendar(year, month):
+            week_cells = []
+            for d in week:
+                iso = d.isoformat()
+                has_t = next((t for t in tournaments if iso >= t['start_date'] and iso <= t['end_date']), None)
+                week_cells.append({
+                    "day": d.day if d.month == month else "",
+                    "iso": iso,
+                    "active": bool(has_t),
+                    "tid": has_t["id"] if has_t else ""
+                })
+            weeks.append(week_cells)
+        months.append({"name": month_name, "weeks": weeks})
     all_names = sorted({p['name'] for t in _load()['tournaments'] for p in t['participants']})
     return render_template_string(base_tpl,
                                   tournaments=tournaments,
                                   archive=archive,
-                                  all_names=all_names)
+                                  filter_name=filter_name,
+                                  all_names=all_names,
+                                  calendar_months=months)
 
 if __name__ == "__main__":
     print("📣 Starte Turnierverwaltung auf http://127.0.0.1:8002")
