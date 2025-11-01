@@ -22,7 +22,7 @@ RUN python -m pip install --upgrade pip \
 COPY --chown=appuser:appuser app.py ./
 
 USER appuser
-fix
+
 EXPOSE 5000
 
 CMD ["python", "app.py"]
