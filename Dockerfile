@@ -19,10 +19,10 @@ RUN python -m pip install --upgrade pip \
     && pip install --no-cache-dir --requirement requirements.txt \
     && rm requirements.txt
 
-COPY --chown=appuser:appuser app.py data.yaml ./
+COPY --chown=appuser:appuser app.py ./
 
 USER appuser
-
+fix
 EXPOSE 5000
 
 CMD ["python", "app.py"]
