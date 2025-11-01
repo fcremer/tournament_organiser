@@ -1,12 +1,15 @@
 
 name: CI / CD
 
-# Trigger für Pull-Requests und Pushes auf main
+# Trigger für Pull-Requests, Pushes auf main, manuelle Ausführung und einen nächtlichen Check für Basis-Image-Updates
 on:
   pull_request:
     branches: [ main ]
   push:
     branches: [ main ]
+  workflow_dispatch:
+  schedule:
+    - cron: '0 2 * * *'
 
 jobs:
   # 1) Test-Job
@@ -45,7 +48,7 @@ jobs:
     name: Build & Push Docker Image
     runs-on: ubuntu-latest
     needs: test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     steps:
       - name: Checkout
         uses: actions/checkout@v3
@@ -61,6 +64,7 @@ jobs:
         with:
           context: .
           push: true
+          pull: true
           tags: |
             ${{ secrets.DOCKERHUB_USERNAME }}/turnierverwaltung:latest
             ${{ secrets.DOCKERHUB_USERNAME }}/turnierverwaltung:${{ github.sha }}
